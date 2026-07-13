@@ -1,0 +1,296 @@
+import numpy as np
+import random
+from scipy.sparse import rand
+import math
+import matplotlib.pyplot as plt
+
+POPULATION_SIZE=100
+GENERATIONS=300
+k1,k2,a,b=1,1,0.3,0.2
+
+def repair_individual(ind):    
+    for i in range(40):
+        row_sum = ind[i].sum()
+        if row_sum != 1:
+            ones_pos = np.where(ind[i] == 1)[0]
+            if len(ones_pos) > 0:
+                keep_pos = np.random.choice(ones_pos)
+            else:
+                keep_pos = np.random.randint(0, 8)
+            ind[i] = 0
+            ind[i][keep_pos] = 1
+    col_sums = ind.sum(axis=0)
+    for _ in range(100):  # 最大修复迭代次数
+        violations = np.where(col_sums < 3)[0]
+        if len(violations) == 0:
+            break        
+        for j in violations:
+            needed = 3 - col_sums[j]            
+            donors = np.where(col_sums > 3)[0]
+            np.random.shuffle(donors)            
+            for k in donors:
+                candidate_rows = np.where(ind[:, k] == 1)[0]
+                for transfer_count in range(min(needed.astype(int), len(candidate_rows))):
+                    row_idx = candidate_rows[transfer_count]
+                    ind[row_idx][k] = 0
+                    ind[row_idx][j] = 1
+
+                    col_sums[k] -= 1
+                    col_sums[j] += 1
+                    needed -= 1
+                    
+                    if needed == 0:
+                        break
+                if needed == 0:
+                    break
+    return ind
+
+def fee_cost(mc):
+    container_m=np.array(28*[10000]+12*[3000])
+    freight_m=np.array([9999,1130,2400,160,4000,1800,1700,3500])
+    Freight_fee=np.dot(np.dot(container_m,mc),freight_m.T)/2
+    Insurance_fee=5*1.1*0.001*Freight_fee
+    v_unload_m=7900*(np.array([1/0.96,1/1.15,1/1.03,1/1.37,1/4.39,1/2.06,1/1.76,1/1.94]))
+    unload_list=[]
+    for i in range(8):
+        normalvessel_nums=np.sum(mc[:28,i])
+        fastvessel_nums=np.sum(mc[28:,i])
+        n_turn=(normalvessel_nums//5) + 1
+        f_turn=(fastvessel_nums//5) + 1
+        unload_list.append(n_turn*10000+f_turn*3000)
+    T_unload_m=np.array(unload_list)/v_unload_m
+    stop_m=np.array([5,26.6,5,8.8,16.5,300,300,16.5])
+    Stop_fee=np.dot(T_unload_m,stop_m.T)
+    load_m=np.dot(container_m,mc)
+    loadrate_m=np.array([480,750,490,634,1200,1300,2000,1200])
+    Load_fee=np.dot(load_m,loadrate_m.T)
+    tariff_m=np.array([0,9,0,10,51.3,29,27,51.3])
+    Tariff_fee=5*np.dot(np.dot(container_m, mc)*freight_m,tariff_m)
+    Fee_sum=Freight_fee+Insurance_fee+Stop_fee+Load_fee+Tariff_fee
+    return Fee_sum
+
+def time_cost(mc):
+    velocity_m=np.array(28*[720]+12*[960])
+    d_m=np.array([0,3604,150,973,26530,13140,12625,21664])
+    d_sum=np.dot(mc, d_m.T)
+    Freight_time=sum(list(d_sum/velocity_m))
+    v_unload_m=7900*(np.array([1/0.96,1/1.15,1/1.03,1/1.37,1/4.39,1/2.06,1/1.76,1/1.94]))
+    unload_list=[]
+    wait_list=[]
+    for i in range(8):
+        normalvessel_nums=np.sum(mc[:28,i])
+        fastvessel_nums=np.sum(mc[28:,i])
+        n_turn=(normalvessel_nums//5) + 1
+        f_turn=(fastvessel_nums//5) + 1
+        if n_turn > 1:
+            if f_turn > 1:
+                wait_list.append((n_turn-1)*10000+(f_turn-1)*3000)
+            else:
+                wait_list.append((n_turn-1)*10000)
+        elif f_turn > 1:
+            wait_list.append((f_turn-1)*3000)
+        else:
+            wait_list.append(0)
+        unload_list.append(n_turn*10000+f_turn*3000)
+    T_unload_m=np.array(unload_list)/v_unload_m
+    T_wait_m=np.array(wait_list)/v_unload_m
+    Unload_time=sum(list(T_unload_m))
+    Wait_time=sum(list(T_wait_m))
+    Time_sum=Freight_time+Unload_time+Wait_time
+    return Time_sum
+
+def load(mc):
+    v_unload_m=7900*(np.array([1/0.96,1/1.15,1/1.03,1/1.37,1/4.39,1/2.06,1/1.76,1/1.94]))
+    unload_list=[]
+    for i in range(8):
+        normalvessel_nums=np.sum(mc[:28,i])
+        fastvessel_nums=np.sum(mc[28:,i])
+        n_turn=(normalvessel_nums//5) + 1
+        f_turn=(fastvessel_nums//5) + 1
+        unload_list.append(n_turn*10000+f_turn*3000)
+    T_unload_m=np.array(unload_list)/v_unload_m
+    Unload_time=sum(list(T_unload_m))
+    container_m=np.array(28*[10000]+12*[3000])
+    load_m=np.dot(container_m,mc)
+    Load_rate=sum(list(load_m))/Unload_time
+    return Load_rate
+
+def utilization_rate(mc):
+    v_unload_m=7900*(np.array([1/0.96,1/1.15,1/1.03,1/1.37,1/4.39,1/2.06,1/1.76,1/1.94]))
+    t_limit_m=40000/v_unload_m
+    unload_list=[]
+    for i in range(8):
+        normalvessel_nums=np.sum(mc[:28,i])
+        fastvessel_nums=np.sum(mc[28:,i])
+        n_turn=(normalvessel_nums//5) + 1
+        f_turn=(fastvessel_nums//5) + 1
+        unload_list.append(n_turn*10000+f_turn*3000)
+    T_unload_m=np.array(unload_list)/v_unload_m
+    time_rate=sum(list(T_unload_m/t_limit_m))/8
+    U_rate=sum(list((T_unload_m/t_limit_m-time_rate)**2))/8
+    return U_rate
+
+def finance(mc):
+    container_m=np.array(28*[10000]+12*[3000])
+    freight_m=np.array([9999,1130,2400,160,4000,1800,1700,3500])
+    tariff_m=np.array([0,9,0,10,51.3,29,27,51.3])
+    Tariff_fee=5*np.dot(np.dot(container_m, mc)*freight_m,tariff_m)
+    finance_cost=-Tariff_fee
+    return finance_cost
+
+class MatrixIndividual:
+    def _init_(self):
+        A=rand(40,8,density=0.125,format='csr')
+        A[A>0]=1
+        self.matrix=repair_individual(A.toarray())
+        self.fitness=0        
+        
+def initialize_population():
+    return [MatrixIndividual() for i in range(POPULATION_SIZE)]
+
+def select_parents(population,F1,F2,F3,F4,F5):
+    total_fitness=sum(FIT(ind,F1,F2,F3,F4,F5) for ind in population)
+    select_probs=[FIT(ind,F1,F2,F3,F4,F5)/total_fitness for ind in population]
+    return random.choices(population,weights=select_probs,k=2)
+
+def CROSSOVER_RATE(p1,p2,population,F1,F2,F3,F4,F5):
+    favg=sum(FIT(ind,F1,F2,F3,F4,F5) for ind in population)/POPULATION_SIZE
+    flow=min(FIT(p1,F1,F2,F3,F4,F5),FIT(p2,F1,F2,F3,F4,F5))
+    fl=[]
+    for ind in population:
+        fl.append(FIT(ind,F1,F2,F3,F4,F5))
+    fmin=min(fl)
+    if flow>=favg:
+        r=1
+    else:
+        r=(flow-fmin)/(favg-fmin)
+    return r
+
+def MUTATION_RATE(e):
+    rate=0.3+0.2*math.cos(-0.5*math.pi+e*math.pi/300)
+    return rate
+
+def crossover(p1,p2,population,F1,F2,F3,F4,F5):
+    c1=MatrixIndividual()
+    c2=MatrixIndividual()
+    c1._init_()
+    c2._init_()
+    if random.random() < CROSSOVER_RATE(p1,p2,population,F1,F2,F3,F4,F5):
+        row=random.randint(1,39)
+        c1.matrix[:row,:]=p1.matrix[:row,:]
+        c1.matrix[row:,:]=p2.matrix[row:,:]
+        c2.matrix[:row,:]=p2.matrix[:row,:]
+        c2.matrix[row:,:]=p1.matrix[row:,:]
+    return c1,c2
+
+def mutate(individual,e):
+    individual._init_()
+    m_cindex=random.randint(0, 7)
+    m_rindex=random.randint(0,39)
+    if random.random() > MUTATION_RATE(e):
+        if individual.matrix[m_rindex][m_cindex]==0:
+            individual.matrix[m_rindex][m_cindex]=1
+        else:
+            individual.matrix[m_rindex][m_cindex]=0
+    return individual
+
+def repair_individual2(ind):    
+    for i in range(40):
+        row_sum = ind.matrix[i].sum()
+        if row_sum != 1:
+            ones_pos = np.where(ind.matrix[i] == 1)[0]
+            if len(ones_pos) > 0:
+                keep_pos = np.random.choice(ones_pos)
+            else:
+                keep_pos = np.random.randint(0, 8)
+            ind.matrix[i] = 0
+            ind.matrix[i][keep_pos] = 1
+    col_sums = ind.matrix.sum(axis=0)
+    for _ in range(100):  # 最大修复迭代次数
+        violations = np.where(col_sums < 3)[0]
+        if len(violations) == 0:
+            break        
+        for j in violations:
+            needed = 3 - col_sums[j]            
+            donors = np.where(col_sums > 3)[0]
+            np.random.shuffle(donors)            
+            for k in donors:
+                candidate_rows = np.where(ind.matrix[:, k] == 1)[0]
+                for transfer_count in range(min(needed.astype(int), len(candidate_rows))):
+                    row_idx = candidate_rows[transfer_count]
+                    ind.matrix[row_idx][k] = 0
+                    ind.matrix[row_idx][j] = 1
+
+                    col_sums[k] -= 1
+                    col_sums[j] += 1
+                    needed -= 1
+                    
+                    if needed == 0:
+                        break
+                if needed == 0:
+                    break
+    return ind
+
+def FIT(ind,F1,F2,F3,F4,F5):
+    y=0.2402*((fee_cost(ind.matrix)-min(F1))/(max(F1)-min(F1)))**2+0.2334*((time_cost(ind.matrix)-min(F2))/(max(F2)-min(F2)))**2+0.1296*((load(ind.matrix)-min(F3))/(max(F3)-min(F3)))**2+0.1464*((utilization_rate(ind.matrix)-min(F4))/(max(F4)-min(F4)))**2+0.2503*((finance(ind.matrix)-min(F5))/(max(F5)-min(F5)))**2
+    return 1/y
+
+def genetic_algorithm():
+    population=initialize_population()
+    for individual in population:
+        individual._init_()
+    X=[]
+    Y=[]
+    Z=[]
+    for gen in range(GENERATIONS):
+        F1=[]
+        F2=[]
+        F3=[]
+        F4=[]
+        F5=[]
+        for i in range(POPULATION_SIZE):
+            F1.append(fee_cost(population[i].matrix))
+            F2.append(time_cost(population[i].matrix))
+            F3.append(load(population[i].matrix))
+            F4.append(utilization_rate(population[i].matrix))
+            F5.append(finance(population[i].matrix))
+        population.sort(key=lambda x:FIT(x,F1,F2,F3,F4,F5),reverse=True)
+        X.append(gen)
+        Y.append(FIT(population[0], F1, F2, F3, F4, F5))
+        Z.append(population[0])
+        print(f"Generation {gen}:Best Fitness={FIT(population[0],F1,F2,F3,F4,F5):.2f}")
+
+        new_population=[]
+        new_population.extend(population[:10])
+        while len(new_population)<POPULATION_SIZE:
+            parents=select_parents(population,F1,F2,F3,F4,F5)
+
+            offspring1,offspring2=crossover(parents[0],parents[1],population,F1,F2,F3,F4,F5)
+
+            offspring1=mutate(offspring1,gen)
+            offspring2=mutate(offspring2,gen)
+
+            new_population.append(offspring1)            
+            new_population.append(offspring2)  
+        population=new_population[:POPULATION_SIZE]
+        for i in range(POPULATION_SIZE):
+            population[i]=repair_individual2(population[i])
+        
+    return population[0],F1,F2,F3,F4,F5,X,Y
+
+best_solution=genetic_algorithm()
+plt.rcParams['font.sans-serif']=['SimHei']
+plt.plot(best_solution[6], best_solution[7])
+plt.title("适应度随迭代变化趋势折线图")
+plt.xlabel('迭代轮数')
+plt.ylabel('适应度')
+print("\nBest Solution Matrix:")
+print(best_solution[0].matrix)
+print('Final Fitness:{:.2f}'.format(FIT(best_solution[0],best_solution[1],best_solution[2],best_solution[3],best_solution[4],best_solution[5])))
+print(fee_cost(best_solution[0].matrix))
+print(time_cost(best_solution[0].matrix))
+print(load(best_solution[0].matrix))
+print(utilization_rate(best_solution[0].matrix))
+print(finance(best_solution[0].matrix))
+plt.show()
+    
